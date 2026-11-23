@@ -1,0 +1,76 @@
+# grade-local — official make.fun BTC Race grader, remote Docker via GitHub Actions
+#
+# Runs the official kit grader (docker driver) against this repo's bot
+# (main.py at repo root) on the frozen dev window, twice, and checks the
+# two runs agree (determinism). No submission is made here.
+#
+# Trigger: Actions tab -> "grade-local" -> Run workflow (workflow_dispatch).
+# Results: `grade-results` artifact (both run logs).
+# Requirements: kit.tar.gz must be present in the repo root (unpacked to kit/).
+
+name: grade-local
+
+on:
+  workflow_dispatch:
+
+jobs:
+  grade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout bot repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 22 (kit CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python 3.13 (bot entrypoint)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Docker status
+        run: docker --version && docker info --format '{{.ServerVersion}}'
+
+      - name: Unpack official kit
+        run: |
+          mkdir -p kit
+          tar xzf kit.tar.gz -C kit --strip-components=1
+          ls kit
+          test -f kit/cli/makefun.mjs
+
+      - name: grade-local run 1
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          node kit/cli/makefun.mjs grade-local --kit kit --bot . --driver docker 2>&1 | tee grade-run1.log
+
+      - name: grade-local run 2
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          node kit/cli/makefun.mjs grade-local --kit kit --bot . --driver docker 2>&1 | tee grade-run2.log
+
+      - name: Determinism check (result_sha256 must match, twice)
+        run: |
+          sha1=$(grep -o 'result_sha256[^,}]*' grade-run1.log | head -1)
+          sha2=$(grep -o 'result_sha256[^,}]*' grade-run2.log | head -1)
+          echo "run1: $sha1"
+          echo "run2: $sha2"
+          test -n "$sha1" || (echo "ERROR: no result_sha256 in run 1 log" && exit 1)
+          test "$sha1" = "$sha2" || (echo "ERROR: runs disagree" && exit 1)
+          echo "DETERMINISM OK"
+
+      - name: Upload grade results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grade-results
+          path: |
+            grade-run1.log
+            grade-run2.log
+          retention-days: 30
